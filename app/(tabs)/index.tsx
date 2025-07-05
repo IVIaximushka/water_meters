@@ -7,6 +7,7 @@ import {
   Alert,
   Platform,
   Dimensions,
+  Image,
 } from 'react-native';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
@@ -25,6 +26,7 @@ export default function CameraScreen() {
   const [isCapturing, setIsCapturing] = useState(false);
   const [lastPhotoSaved, setLastPhotoSaved] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
+  const [processedImage, setProcessedImage] = useState<string | null>(null);
   const cameraRef = useRef<CameraView>(null);
 
   // Функция для запроса всех разрешений
@@ -55,6 +57,8 @@ export default function CameraScreen() {
     setFacing(current => (current === 'back' ? 'front' : 'back'));
   };
 
+
+
   // Обработка изображения с помощью OpenCV
   const processImageWithOpenCV = async (base64Image: string): Promise<string> => {
     try {
@@ -63,25 +67,28 @@ export default function CameraScreen() {
       }
       
       // Создаем Mat из base64 изображения
-      const srcMat = OpenCV.base64ToMat(`data:image/jpeg;base64,${base64Image}`);
+      const src = OpenCV.base64ToMat(base64Image);
       
-      // Создаем Mat для результата - пустой Mat который OpenCV заполнит
-      const dstMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      // Создаем Mat для результата
+      const dst = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
       
-      // Поворачиваем на 90 градусов по часовой стрелке
-      OpenCV.invoke('rotate', srcMat, dstMat, RotateFlags.ROTATE_90_CLOCKWISE);
+      // Поворачиваем изображение на 90 градусов по часовой стрелке
+      OpenCV.invoke('rotate', src, dst, RotateFlags.ROTATE_90_CLOCKWISE);
       
       // Конвертируем обработанное изображение обратно в base64
-      const result = OpenCV.toJSValue(dstMat);
+      const result = OpenCV.toJSValue(dst);
       
       if (!result || !result.base64) {
         throw new Error('Не удалось получить обработанное изображение');
       }
       
-      // Очищаем память OpenCV
+      // Сохраняем обработанное изображение в состояние для отображения
+      setProcessedImage(`data:image/jpeg;base64,${result.base64}`);
+      
+      // Очищаем буферы OpenCV
       OpenCV.clearBuffers();
       
-      // Создаем временный файл для обработанного изображения
+      // Создаем временный файл для сохранения в галерею
       const tempProcessedPath = `${RNFS.CachesDirectoryPath}/temp_processed_${Date.now()}.jpg`;
       await RNFS.writeFile(tempProcessedPath, result.base64, 'base64');
       
@@ -191,45 +198,88 @@ export default function CameraScreen() {
         facing={facing}
         mode="picture"
       >
-        {/* Индикатор успешного сохранения */}
-        {lastPhotoSaved && (
+        {/* Индикатор успешного сохранения - скрываем когда показываем обработанное изображение */}
+        {lastPhotoSaved && !processedImage && (
           <View style={styles.successIndicator}>
             <CheckCircle size={24} color="#4CAF50" />
             <Text style={styles.successText}>Повернутое фото сохранено!</Text>
           </View>
         )}
 
-        {/* Элементы управления */}
-        <View style={styles.controlsContainer}>
-          {/* Кнопка переключения камеры */}
+        {/* Отображение обработанного изображения */}
+        {processedImage && (
           <TouchableOpacity
-            style={styles.flipButton}
-            onPress={toggleCameraFacing}
+            style={styles.processedImageContainer}
+            activeOpacity={1}
+            onPress={() => {
+              if (Platform.OS !== 'web') {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }
+              setProcessedImage(null);
+            }}
           >
-            <RotateCcw size={24} color="#fff" />
+            <TouchableOpacity
+              style={styles.closeButton}
+              onPress={() => {
+                if (Platform.OS !== 'web') {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }
+                setProcessedImage(null);
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.closeButtonText}>×</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.imageWrapper}
+              activeOpacity={1}
+              onPress={() => {}}
+            >
+              <Image
+                source={{ uri: processedImage }}
+                style={styles.processedImage}
+                resizeMode="contain"
+              />
+            </TouchableOpacity>
+            <Text style={styles.processedImageText}>
+              Обработанное изображение (повернуто на 90°)
+            </Text>
           </TouchableOpacity>
+        )}
 
-          {/* Кнопка съемки */}
-          <TouchableOpacity
-            style={[
-              styles.captureButton,
-              isCapturing && styles.captureButtonPressed
-            ]}
-            onPress={takePicture}
-            disabled={isCapturing}
-          >
-            <View style={styles.captureButtonInner}>
-              {isCapturing ? (
-                <View style={styles.capturingIndicator} />
-              ) : (
-                <Camera size={32} color="#000" />
-              )}
-            </View>
-          </TouchableOpacity>
+        {/* Элементы управления - скрываем когда показываем обработанное изображение */}
+        {!processedImage && (
+          <View style={styles.controlsContainer}>
+            {/* Кнопка переключения камеры */}
+            <TouchableOpacity
+              style={styles.flipButton}
+              onPress={toggleCameraFacing}
+            >
+              <RotateCcw size={24} color="#fff" />
+            </TouchableOpacity>
 
-          {/* Пустой блок для центрирования кнопки съемки */}
-          <View style={styles.flipButton} />
-        </View>
+            {/* Кнопка съемки */}
+            <TouchableOpacity
+              style={[
+                styles.captureButton,
+                isCapturing && styles.captureButtonPressed
+              ]}
+              onPress={takePicture}
+              disabled={isCapturing}
+            >
+              <View style={styles.captureButtonInner}>
+                {isCapturing ? (
+                  <View style={styles.capturingIndicator} />
+                ) : (
+                  <Camera size={32} color="#000" />
+                )}
+              </View>
+            </TouchableOpacity>
+
+            {/* Пустой блок для центрирования кнопки съемки */}
+            <View style={styles.flipButton} />
+          </View>
+        )}
       </CameraView>
     </View>
   );
@@ -347,5 +397,57 @@ const styles = StyleSheet.create({
     height: 20,
     backgroundColor: '#FF3B30',
     borderRadius: 10,
+  },
+  processedImageContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#000',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    zIndex: 1000,
+    elevation: 1000,
+  },
+  closeButton: {
+    position: 'absolute',
+    top: 60,
+    right: 20,
+    width: 50,
+    height: 50,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 25,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1001,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 1001,
+  },
+  closeButtonText: {
+    fontSize: 28,
+    color: '#000',
+    fontWeight: 'bold',
+    lineHeight: 28,
+  },
+  processedImage: {
+    width: width - 40,
+    height: height - 160,
+    borderRadius: 15,
+    backgroundColor: '#111',
+  },
+  processedImageText: {
+    color: '#fff',
+    fontSize: 18,
+    marginTop: 30,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  imageWrapper: {
+    borderRadius: 15,
   },
 });
