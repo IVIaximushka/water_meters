@@ -22,6 +22,7 @@ export default function CameraScreen() {
     MediaLibrary.usePermissions();
   const [isCapturing, setIsCapturing] = useState(false);
   const [lastPhotoSaved, setLastPhotoSaved] = useState(false);
+  const [cameraKey, setCameraKey] = useState(0);
   const cameraRef = useRef<CameraView>(null);
 
   // Функция для запроса всех разрешений
@@ -77,6 +78,11 @@ export default function CameraScreen() {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }
         
+        // Принудительно обновить камеру после съемки с небольшой задержкой
+        setTimeout(() => {
+          setCameraKey(prev => prev + 1);
+        }, 100);
+        
         // Скрыть индикатор успеха через 2 секунды
         setTimeout(() => setLastPhotoSaved(false), 2000);
       } else {
@@ -85,6 +91,8 @@ export default function CameraScreen() {
     } catch (error) {
       console.error('Ошибка при съемке:', error);
       Alert.alert('Ошибка', 'Не удалось сделать фотографию');
+      // Принудительно обновить камеру в случае ошибки
+      setCameraKey(prev => prev + 1);
     } finally {
       setIsCapturing(false);
     }
@@ -120,6 +128,7 @@ export default function CameraScreen() {
   return (
     <View style={styles.container}>
       <CameraView
+        key={cameraKey}
         ref={cameraRef}
         style={styles.camera}
         facing={facing}
