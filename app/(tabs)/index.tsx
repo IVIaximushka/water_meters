@@ -12,6 +12,8 @@ import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
 import * as Haptics from 'expo-haptics';
 import { Camera, RotateCcw, CheckCircle } from 'lucide-react-native';
+import { OpenCV, ColorConversionCodes, RotateFlags, ObjectType, DataTypes } from 'react-native-fast-opencv';
+import RNFS from 'react-native-fs';
 
 const { width, height } = Dimensions.get('window');
 
@@ -53,6 +55,47 @@ export default function CameraScreen() {
     setFacing(current => (current === 'back' ? 'front' : 'back'));
   };
 
+  // Обработка изображения с помощью OpenCV
+  const processImageWithOpenCV = async (imageUri: string): Promise<string> => {
+    try {
+      // Читаем изображение в base64
+      const base64Image = await RNFS.readFile(imageUri, 'base64');
+      
+      if (!base64Image) {
+        throw new Error('Не удалось прочитать изображение');
+      }
+      
+      // Создаем Mat из base64 изображения
+      const srcMat = OpenCV.base64ToMat(`data:image/jpeg;base64,${base64Image}`);
+      
+      // Создаем Mat для результата - пустой Mat который OpenCV заполнит
+      const dstMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      
+      // Поворачиваем на 90 градусов по часовой стрелке
+      OpenCV.invoke('rotate', srcMat, dstMat, RotateFlags.ROTATE_90_CLOCKWISE);
+      
+      // Конвертируем обработанное изображение обратно в base64
+      const result = OpenCV.toJSValue(dstMat);
+      
+      if (!result || !result.base64) {
+        throw new Error('Не удалось получить обработанное изображение');
+      }
+      
+      // Очищаем память OpenCV
+      OpenCV.clearBuffers();
+      
+      // Создаем временный файл для обработанного изображения
+      const tempProcessedPath = `${RNFS.CachesDirectoryPath}/temp_processed_${Date.now()}.jpg`;
+      await RNFS.writeFile(tempProcessedPath, result.base64, 'base64');
+      
+      return tempProcessedPath;
+    } catch (error) {
+      console.error('Ошибка при обработке изображения:', error);
+      OpenCV.clearBuffers();
+      throw error;
+    }
+  };
+
   // Съемка фотографии
   const takePicture = async () => {
     if (!cameraRef.current || isCapturing) return;
@@ -70,21 +113,38 @@ export default function CameraScreen() {
         base64: false,
       });
 
-      if (photo && mediaLibraryPermission?.granted) {
-        await MediaLibrary.saveToLibraryAsync(photo.uri);
-        setLastPhotoSaved(true);
-        
-        if (Platform.OS !== 'web') {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    if (photo && mediaLibraryPermission?.granted) {
+        try {
+          // Обрабатываем изображение с помощью OpenCV
+          const processedImagePath = await processImageWithOpenCV(photo.uri);
+          
+          // Сохраняем обработанное изображение в галерею
+          await MediaLibrary.saveToLibraryAsync(processedImagePath);
+          
+          // Удаляем временный файл
+          try {
+            await RNFS.unlink(processedImagePath);
+          } catch (deleteError) {
+            console.warn('Не удалось удалить временный файл:', deleteError);
+          }
+          
+          setLastPhotoSaved(true);
+          
+          if (Platform.OS !== 'web') {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+          
+          // Принудительно обновить камеру после съемки с небольшой задержкой
+          setTimeout(() => {
+            setCameraKey(prev => prev + 1);
+          }, 100);
+          
+          // Скрыть индикатор успеха через 2 секунды
+          setTimeout(() => setLastPhotoSaved(false), 2000);
+        } catch (processingError) {
+          console.error('Ошибка при обработке изображения:', processingError);
+          Alert.alert('Ошибка', 'Не удалось обработать изображение');
         }
-        
-        // Принудительно обновить камеру после съемки с небольшой задержкой
-        setTimeout(() => {
-          setCameraKey(prev => prev + 1);
-        }, 100);
-        
-        // Скрыть индикатор успеха через 2 секунды
-        setTimeout(() => setLastPhotoSaved(false), 2000);
       } else {
         Alert.alert('Ошибка', 'Не удалось сохранить фотографию');
       }
@@ -138,7 +198,7 @@ export default function CameraScreen() {
         {lastPhotoSaved && (
           <View style={styles.successIndicator}>
             <CheckCircle size={24} color="#4CAF50" />
-            <Text style={styles.successText}>Фото сохранено!</Text>
+            <Text style={styles.successText}>Повернутое фото сохранено!</Text>
           </View>
         )}
 
