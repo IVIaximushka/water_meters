@@ -56,13 +56,10 @@ export default function CameraScreen() {
   };
 
   // Обработка изображения с помощью OpenCV
-  const processImageWithOpenCV = async (imageUri: string): Promise<string> => {
+  const processImageWithOpenCV = async (base64Image: string): Promise<string> => {
     try {
-      // Читаем изображение в base64
-      const base64Image = await RNFS.readFile(imageUri, 'base64');
-      
       if (!base64Image) {
-        throw new Error('Не удалось прочитать изображение');
+        throw new Error('Не удалось получить base64 изображения');
       }
       
       // Создаем Mat из base64 изображения
@@ -110,13 +107,13 @@ export default function CameraScreen() {
     try {
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.8,
-        base64: false,
+        base64: true,
       });
 
-                    if (photo && mediaLibraryPermission?.granted) {
+                    if (photo && photo.base64 && mediaLibraryPermission?.granted) {
         try {
           // Обрабатываем изображение с помощью OpenCV
-          const processedImagePath = await processImageWithOpenCV(photo.uri);
+          const processedImagePath = await processImageWithOpenCV(photo.base64);
           
           // Сохраняем обработанное изображение в галерею
           await MediaLibrary.saveToLibraryAsync(processedImagePath);
