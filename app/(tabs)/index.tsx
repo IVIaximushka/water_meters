@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import * as Haptics from 'expo-haptics';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { Image as ImageIcon, CheckCircle, Camera as CameraIcon, FolderOpen } from 'lucide-react-native';
 import { OpenCV, RotateFlags, ObjectType, DataTypes } from 'react-native-fast-opencv';
+import { loadTensorflowModel, TensorflowModel } from 'react-native-fast-tflite';
 import RNFS from 'react-native-fs';
 
 const { width, height } = Dimensions.get('window');
@@ -30,7 +31,22 @@ export default function ImagePickerScreen() {
   const [showCamera, setShowCamera] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [facing, setFacing] = useState<CameraType>('back');
+  const [obbModel, setObbModel] = useState<TensorflowModel | null>(null);
   const cameraRef = useRef<CameraView>(null);
+
+  // Загрузка модели при монтировании компонента
+  useEffect(() => {
+    const loadModel = async () => {
+      try {
+        const model = await loadTensorflowModel(require('../../assets/weights/obb_float16.tflite'));
+        setObbModel(model);
+        console.log('Модель OBB успешно загружена');
+      } catch (error) {
+        console.error('Ошибка при загрузке модели OBB:', error);
+      }
+    };
+    loadModel();
+  }, []);
 
   // Функция для запроса всех разрешений
   const requestAllPermissions = async () => {
@@ -49,6 +65,105 @@ export default function ImagePickerScreen() {
         'Разрешение на камеру',
         'Для съемки фотографий необходимо разрешение на доступ к камере'
       );
+    }
+  };
+
+
+
+  // Функция для поворота и вырезания горизонтального прямоугольника
+  const cropHorizontalRect = (srcMat: any, x: number, y: number, w: number, h: number, angleRad: number): any => {
+    try {
+      // Если высота больше ширины, меняем местами и корректируем угол
+      if (h > w) {
+        [w, h] = [h, w];
+        angleRad = angleRad - Math.PI / 2;
+      }
+
+      const angleDeg = angleRad * 180 / Math.PI;
+      const center = OpenCV.createObject(ObjectType.Point2f, x, y);
+
+      // Получаем матрицу поворота
+      const rotationMatrix= OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      OpenCV.invoke('getRotationMatrix2D', center, angleDeg, 1.0, rotationMatrix);
+      
+      // Поворачиваем изображение
+      const rotatedMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      const srcInfo = OpenCV.toJSValue(srcMat);
+      const size = OpenCV.createObject(ObjectType.Size, srcInfo.cols, srcInfo.rows);
+      OpenCV.invoke('warpAffine', srcMat, rotatedMat, rotationMatrix, size);
+
+      // Вычисляем границы для вырезания
+      const xInt = Math.floor(x);
+      const yInt = Math.floor(y);
+      const wInt = Math.floor(w);
+      const hInt = Math.floor(h);
+      
+      const left = Math.max(0, xInt - Math.floor(wInt / 2));
+      const top = Math.max(0, yInt - Math.floor(hInt / 2));
+      const right = Math.min(srcInfo.cols, xInt + Math.floor(wInt / 2));
+      const bottom = Math.min(srcInfo.rows, yInt + Math.floor(hInt / 2));
+
+      // Создаем ROI (Region of Interest)
+      const rect = OpenCV.createObject(ObjectType.Rect, left, top, right - left, bottom - top);
+      const croppedMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      OpenCV.invoke('crop', rotatedMat, croppedMat, rect);
+
+      return croppedMat;
+    } catch (error) {
+      console.error('Ошибка при обрезке горизонтального прямоугольника:', error);
+      throw error;
+    }
+  };
+
+  // Функция для обрезки изображения по OBB
+  const cropOBB = (srcMat: any, bestDetection: any[]): any => {
+    try {
+      const threshold = 20;
+      const srcInfo = OpenCV.toJSValue(srcMat);
+      
+      // Денормализуем координаты (умножаем на размеры изображения)
+      let x = bestDetection[0] * srcInfo.cols;
+      let y = bestDetection[1] * srcInfo.rows;
+      let w = bestDetection[2] * srcInfo.cols;
+      let h = bestDetection[3] * srcInfo.rows;
+      let angleRad = bestDetection[6];
+
+      // Определяем класс (берем максимальный confidence)
+      const conf1 = bestDetection[4];
+      const conf2 = bestDetection[5];
+      const classIndex = conf1 > conf2 ? 0 : 1;
+
+      console.log('Параметры OBB для обрезки:', { x, y, w, h, angleRad, classIndex });
+
+      // Проверяем условие поворота на 90 градусов
+      const angleDeg = angleRad * 180 / Math.PI;
+      const shouldRotate = (h > w && angleDeg < threshold) || (h < w && angleDeg > 90 - threshold);
+
+      let finalSrcMat = srcMat;
+
+      if (shouldRotate) {
+        console.log('Поворачиваем изображение на 90 градусов');
+        const rotated90Mat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+        OpenCV.invoke('rotate', srcMat, rotated90Mat, RotateFlags.ROTATE_90_CLOCKWISE);
+        finalSrcMat = rotated90Mat;
+        
+        // Пересчитываем координаты после поворота
+        const temp = x;
+        x = srcInfo.rows - y;
+        y = temp;
+        [w, h] = [h, w];
+      }
+
+      // Добавляем коррекцию угла на основе класса
+      const correctedAngle = angleRad + classIndex * Math.PI;
+
+      // Обрезаем горизонтальный прямоугольник
+      const croppedMat = cropHorizontalRect(finalSrcMat, x, y, w, h, correctedAngle);
+
+      return croppedMat;
+    } catch (error) {
+      console.error('Ошибка при обрезке OBB:', error);
+      throw error;
     }
   };
 
@@ -128,30 +243,161 @@ export default function ImagePickerScreen() {
       const floatArray = convertImageToFloat32Array(base64Image);
       console.log('Получен Float32Array:', floatArray.length, 'элементов');
 
-      // Создаем Mat для результата
-      const dst = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
-      
-      // Поворачиваем изображение на 90 градусов по часовой стрелке
-      OpenCV.invoke('rotate', src, dst, RotateFlags.ROTATE_90_CLOCKWISE);
-      
-      // Конвертируем обработанное изображение обратно в base64
-      const result = OpenCV.toJSValue(dst);
-      
-      if (!result || !result.base64) {
-        throw new Error('Не удалось получить обработанное изображение');
+      // Запускаем модель, если она загружена
+      if (obbModel) {
+        try {
+          console.log('Запускаем инференс модели...');
+          
+          // Создаем входной тензор
+          const inputTensor = new Float32Array(floatArray);
+          
+          // Запускаем модель
+          const outputs = obbModel.runSync([inputTensor]);
+          console.log('Модель TensorFlow Lite успешно выполнена!');
+          console.log('Количество выходных тензоров:', outputs.length);
+          
+          // Функция для преобразования массива аналогично Python reshape(7, -1)
+          const reshapeArray = (array: any, rows: number) => {
+            const flatArray = Array.from(array);
+            const cols = Math.floor(flatArray.length / rows);
+            const result = [];
+            
+            for (let i = 0; i < rows; i++) {
+              const row = [];
+              for (let j = 0; j < cols; j++) {
+                const index = i * cols + j;
+                if (index < flatArray.length) {
+                  row.push(flatArray[index]);
+                }
+              }
+              if (row.length === cols) {
+                result.push(row);
+              }
+            }
+            
+            return result;
+          };
+
+          // Функция для транспонирования матрицы
+          const transposeMatrix = (matrix: any[][]) => {
+            if (matrix.length === 0) return [];
+            
+            const rows = matrix.length;
+            const cols = matrix[0].length;
+            const result = [];
+            
+            for (let j = 0; j < cols; j++) {
+              const row = [];
+              for (let i = 0; i < rows; i++) {
+                row.push(matrix[i][j]);
+              }
+              result.push(row);
+            }
+            
+            return result;
+          };
+
+          // Применяем преобразования к первому выходному тензору
+          if (outputs.length > 0) {
+            const outputTensor = outputs[0];
+            console.log('Размер выходного тензора:', outputTensor.length);
+            
+            // Преобразуем в матрицу 7 строк
+            const reshapedMatrix = reshapeArray(outputTensor, 7);
+            console.log('Матрица после reshape:', reshapedMatrix.length, 'строк');
+            
+            // Транспонируем матрицу
+            const transposedMatrix = transposeMatrix(reshapedMatrix);
+            console.log('Матрица после transpose:', transposedMatrix.length, 'строк');
+            
+            // Структура данных в каждой строке:
+            // [0] - нормализованная x-координата центра oriented bounding box
+            // [1] - нормализованная y-координата центра oriented bounding box  
+            // [2] - ширина oriented bounding box
+            // [3] - высота oriented bounding box
+            // [4] - уверенность первого класса
+            // [5] - уверенность второго класса
+            // [6] - угол поворота obb относительно нормали
+            
+            // Находим строку с максимальным значением confidence (максимум из всех значений индексов 4 и 5)
+            let maxConfidence = -1;
+            let bestDetection: any[] | null = null;
+            
+            transposedMatrix.forEach((row, rowIndex) => {
+              if (row.length > 5) {
+                const conf4 = row[4]; // уверенность первого класса
+                const conf5 = row[5]; // уверенность второго класса
+                const maxRowConfidence = Math.max(conf4, conf5);
+                
+                if (maxRowConfidence > maxConfidence) {
+                  maxConfidence = maxRowConfidence;
+                  bestDetection = row;
+                }
+              }
+            });
+            
+            if (bestDetection) {
+              console.log('Лучшая детекция с максимальной confidence:', maxConfidence);
+              console.log('Параметры лучшей детекции:', bestDetection);
+              console.log('Центр OBB (x, y):', bestDetection[0], bestDetection[1]);
+              console.log('Размеры OBB (ширина, высота):', bestDetection[2], bestDetection[3]);
+              console.log('Confidence класса 1:', bestDetection[4]);
+              console.log('Confidence класса 2:', bestDetection[5]);
+              console.log('Угол поворота OBB:', bestDetection[6]);
+              
+              // Обрезаем изображение по OBB
+              try {
+                console.log('Начинаем обрезку изображения по OBB...');
+                const croppedMat = cropOBB(src, bestDetection);
+                
+                // Конвертируем обрезанное изображение в base64
+                const croppedResult = OpenCV.toJSValue(croppedMat);
+                if (croppedResult && croppedResult.base64) {
+                  console.log('Обрезанное изображение успешно создано');
+                  
+                  // Сохраняем обрезанное изображение для отображения
+                  const croppedImageUri = `data:image/jpeg;base64,${croppedResult.base64}`;
+                  setProcessedImage(croppedImageUri);
+                  
+                  // Создаем временный файл для обрезанного изображения
+                  const tempCroppedPath = `${RNFS.CachesDirectoryPath}/temp_cropped_${Date.now()}.jpg`;
+                  await RNFS.writeFile(tempCroppedPath, croppedResult.base64, 'base64');
+                  
+                  // Сохраняем обрезанное изображение в галерею
+                  if (mediaLibraryPermission?.granted) {
+                    await MediaLibrary.saveToLibraryAsync(tempCroppedPath);
+                    console.log('Обрезанное изображение сохранено в галерею');
+                    
+                    // Удаляем временный файл
+                    try {
+                      await RNFS.unlink(tempCroppedPath);
+                    } catch (deleteError) {
+                      console.warn('Не удалось удалить временный файл:', deleteError);
+                    }
+                  }
+                } else {
+                  console.error('Не удалось получить base64 обрезанного изображения');
+                }
+              } catch (cropError) {
+                console.error('Ошибка при обрезке изображения:', cropError);
+              }
+            } else {
+              console.log('Не найдено детекций с достаточной уверенностью');
+            }
+          }
+          
+        } catch (modelError) {
+          console.error('Ошибка при запуске модели:', modelError);
+        }
+      } else {
+        console.log('Модель OBB не загружена');
       }
-      
-      // Сохраняем обработанное изображение в состояние для отображения
-      setProcessedImage(`data:image/jpeg;base64,${result.base64}`);
-      
+
       // Очищаем буферы OpenCV
       OpenCV.clearBuffers();
       
-      // Создаем временный файл для сохранения в галерею
-      const tempProcessedPath = `${RNFS.CachesDirectoryPath}/temp_processed_${Date.now()}.jpg`;
-      await RNFS.writeFile(tempProcessedPath, result.base64, 'base64');
-      
-      return tempProcessedPath;
+      // Возвращаем пустую строку, так как теперь изображение обрабатывается внутри функции
+      return '';
     } catch (error) {
       console.error('Ошибка при обработке изображения:', error);
       OpenCV.clearBuffers();
@@ -179,17 +425,7 @@ export default function ImagePickerScreen() {
       if (photo && photo.base64 && mediaLibraryPermission?.granted) {
         try {
           // Обрабатываем изображение с помощью OpenCV
-          const processedImagePath = await processImageWithOpenCV(photo.base64);
-          
-          // Сохраняем обработанное изображение в галерею
-          await MediaLibrary.saveToLibraryAsync(processedImagePath);
-          
-          // Удаляем временный файл
-          try {
-            await RNFS.unlink(processedImagePath);
-          } catch (deleteError) {
-            console.warn('Не удалось удалить временный файл:', deleteError);
-          }
+          await processImageWithOpenCV(photo.base64);
           
           setLastPhotoSaved(true);
           
@@ -279,28 +515,16 @@ export default function ImagePickerScreen() {
             }
             
             // Обрабатываем изображение с помощью OpenCV
-            const processedImagePath = await processImageWithOpenCV(base64Image);
+            await processImageWithOpenCV(base64Image);
             
-            // Сохраняем обработанное изображение в галерею
-            if (mediaLibraryPermission?.granted) {
-              await MediaLibrary.saveToLibraryAsync(processedImagePath);
-              
-              // Удаляем временный файл обработанного изображения
-              try {
-                await RNFS.unlink(processedImagePath);
-              } catch (deleteError) {
-                console.warn('Не удалось удалить временный файл:', deleteError);
-              }
-              
-              setLastPhotoSaved(true);
-              
-              if (Platform.OS !== 'web') {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              }
-              
-              // Скрыть индикатор успеха через 2 секунды
-              setTimeout(() => setLastPhotoSaved(false), 2000);
+            setLastPhotoSaved(true);
+            
+            if (Platform.OS !== 'web') {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             }
+            
+            // Скрыть индикатор успеха через 2 секунды
+            setTimeout(() => setLastPhotoSaved(false), 2000);
           } catch (processingError) {
             console.error('Ошибка при обработке выбранного изображения:', processingError);
             Alert.alert('Ошибка', 'Не удалось обработать выбранное изображение');
@@ -348,7 +572,7 @@ export default function ImagePickerScreen() {
       {lastPhotoSaved && !processedImage && (
         <View style={styles.successIndicator}>
           <CheckCircle size={24} color="#4CAF50" />
-          <Text style={styles.successText}>Повернутое фото сохранено!</Text>
+          <Text style={styles.successText}>Обрезанное фото сохранено!</Text>
         </View>
       )}
 
@@ -388,7 +612,7 @@ export default function ImagePickerScreen() {
             />
           </TouchableOpacity>
           <Text style={styles.processedImageText}>
-            Обработанное изображение (повернуто на 90°)
+            Обрезанное изображение по OBB
           </Text>
         </TouchableOpacity>
       )}
@@ -447,7 +671,7 @@ export default function ImagePickerScreen() {
             <ImageIcon size={80} color="#007AFF" />
             <Text style={styles.headerTitle}>Обработка изображений</Text>
             <Text style={styles.headerSubtitle}>
-              Сделайте фото или выберите из галереи для поворота на 90°
+              Сделайте фото или выберите из галереи для обрезки по OBB
             </Text>
           </View>
 
