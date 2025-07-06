@@ -32,20 +32,27 @@ export default function ImagePickerScreen() {
   const [cameraKey, setCameraKey] = useState(0);
   const [facing, setFacing] = useState<CameraType>('back');
   const [obbModel, setObbModel] = useState<TensorflowModel | null>(null);
+  const [detectModel, setDetectModel] = useState<TensorflowModel | null>(null);
   const cameraRef = useRef<CameraView>(null);
 
   // Загрузка модели при монтировании компонента
   useEffect(() => {
-    const loadModel = async () => {
+    const loadModels = async () => {
       try {
-        const model = await loadTensorflowModel(require('../../assets/weights/obb_float16.tflite'));
-        setObbModel(model);
+        // Загрузка OBB модели
+        const obbModel = await loadTensorflowModel(require('../../assets/weights/obb_float16.tflite'));
+        setObbModel(obbModel);
         console.log('Модель OBB успешно загружена');
+        
+        // Загрузка detect модели
+        const detectModel = await loadTensorflowModel(require('../../assets/weights/detect_float16.tflite'));
+        setDetectModel(detectModel);
+        console.log('Модель detect успешно загружена');
       } catch (error) {
-        console.error('Ошибка при загрузке модели OBB:', error);
+        console.error('Ошибка при загрузке моделей:', error);
       }
     };
-    loadModel();
+    loadModels();
   }, []);
 
   // Функция для запроса всех разрешений
@@ -70,7 +77,7 @@ export default function ImagePickerScreen() {
 
 
 
-  // Функция для поворота и вырезания горизонтального прямоугольника
+  // Функция для поворота и вырезания квадрата с наибольшей стороной
   const cropHorizontalRect = (srcMat: any, x: number, y: number, w: number, h: number, angleRad: number): any => {
     try {
       // Если высота больше ширины, меняем местами и корректируем угол
@@ -92,25 +99,35 @@ export default function ImagePickerScreen() {
       const size = OpenCV.createObject(ObjectType.Size, srcInfo.cols, srcInfo.rows);
       OpenCV.invoke('warpAffine', srcMat, rotatedMat, rotationMatrix, size);
 
-      // Вычисляем границы для вырезания
+      // Определяем размер квадрата как наибольшую сторону
+      const maxSide = Math.max(w, h);
+      const squareSize = Math.floor(maxSide);
+      
+      console.log(`Создаем квадрат ${squareSize}x${squareSize} для центрирования прямоугольника ${Math.floor(w)}x${Math.floor(h)}`);
+
+      // Вычисляем границы квадрата с центрированием
       const xInt = Math.floor(x);
       const yInt = Math.floor(y);
-      const wInt = Math.floor(w);
-      const hInt = Math.floor(h);
       
-      const left = Math.max(0, xInt - Math.floor(wInt / 2));
-      const top = Math.max(0, yInt - Math.floor(hInt / 2));
-      const right = Math.min(srcInfo.cols, xInt + Math.floor(wInt / 2));
-      const bottom = Math.min(srcInfo.rows, yInt + Math.floor(hInt / 2));
+      const left = Math.max(0, xInt - Math.floor(squareSize / 2));
+      const top = Math.max(0, yInt - Math.floor(squareSize / 2));
+      const right = Math.min(srcInfo.cols, xInt + Math.floor(squareSize / 2));
+      const bottom = Math.min(srcInfo.rows, yInt + Math.floor(squareSize / 2));
 
-      // Создаем ROI (Region of Interest)
-      const rect = OpenCV.createObject(ObjectType.Rect, left, top, right - left, bottom - top);
+      // Проверяем, что получается квадрат
+      const actualWidth = right - left;
+      const actualHeight = bottom - top;
+      
+      console.log(`Фактические размеры вырезанной области: ${actualWidth}x${actualHeight}`);
+
+      // Создаем ROI (Region of Interest) для квадрата
+      const rect = OpenCV.createObject(ObjectType.Rect, left, top, actualWidth, actualHeight);
       const croppedMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
       OpenCV.invoke('crop', rotatedMat, croppedMat, rect);
 
       return croppedMat;
     } catch (error) {
-      console.error('Ошибка при обрезке горизонтального прямоугольника:', error);
+      console.error('Ошибка при обрезке квадрата:', error);
       throw error;
     }
   };
@@ -168,14 +185,12 @@ export default function ImagePickerScreen() {
   };
 
   // Функция для преобразования изображения в Float32Array
-  const convertImageToFloat32Array = (base64Image: string): Float32Array => {
+  const convertImageToFloat32Array = (srcMat: any): Float32Array => {
     try {
-      // Создаем Mat из base64 изображения
-      const src = OpenCV.base64ToMat(base64Image);
-      console.log('Исходное изображение:', src);
+      console.log('Исходное изображение:', srcMat);
       
       // Получаем информацию об изображении
-      const imageData = OpenCV.toJSValue(src);
+      const imageData = OpenCV.toJSValue(srcMat);
       console.log('Информация об изображении:', {
         width: imageData.cols,
         height: imageData.rows,
@@ -186,7 +201,7 @@ export default function ImagePickerScreen() {
       // Создаем копию для изменения размера
       const resized = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
       const targetSize = OpenCV.createObject(ObjectType.Size, 640, 640);
-      OpenCV.invoke('resize', src, resized, targetSize, 0, 0, 1);
+      OpenCV.invoke('resize', srcMat, resized, targetSize, 0, 0, 1);
       
       // Конвертируем в RGB формат
       const rgbMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
@@ -240,7 +255,7 @@ export default function ImagePickerScreen() {
       console.log(src)
       
       // Преобразуем изображение в Float32Array
-      const floatArray = convertImageToFloat32Array(base64Image);
+      const floatArray = convertImageToFloat32Array(src);
       console.log('Получен Float32Array:', floatArray.length, 'элементов');
 
       // Запускаем модель, если она загружена
@@ -358,6 +373,133 @@ export default function ImagePickerScreen() {
                   // Сохраняем обрезанное изображение для отображения
                   const croppedImageUri = `data:image/jpeg;base64,${croppedResult.base64}`;
                   setProcessedImage(croppedImageUri);
+                  
+                  // Применяем detect модель к обрезанному изображению
+                  if (detectModel) {
+                    try {
+                      console.log('Применяем detect модель к обрезанному изображению...');
+                      
+                      // Конвертируем обрезанное изображение в Float32Array
+                      const croppedFloatArray = convertImageToFloat32Array(croppedMat);
+                      console.log('Обрезанное изображение преобразовано в Float32Array:', croppedFloatArray.length, 'элементов');
+                      
+                      // Запускаем detect модель
+                      const detectOutputs = detectModel.runSync([croppedFloatArray]);
+                      console.log('Detect модель успешно выполнена!');
+                      console.log('Количество выходных тензоров detect модели:', detectOutputs.length);
+                      
+                      if (detectOutputs.length > 0) {
+                        const detectOutputTensor = detectOutputs[0];
+                        console.log('Размер выходного тензора detect модели:', detectOutputTensor.length);
+                        
+                        // Применяем reshape(14, -1) и transpose
+                        const detectReshapedMatrix = reshapeArray(detectOutputTensor, 14);
+                        console.log('Detect матрица после reshape:', detectReshapedMatrix.length, 'строк');
+                        
+                        const detectTransposedMatrix = transposeMatrix(detectReshapedMatrix);
+                        console.log('Detect матрица после transpose:', detectTransposedMatrix.length, 'строк');
+                        
+                        // Выводим первые 5 строк вывода модели
+                        console.log('Первые 5 строк вывода detect модели:');
+                        for (let i = 0; i < Math.min(5, detectTransposedMatrix.length); i++) {
+                          console.log(`Строка ${i + 1}:`, detectTransposedMatrix[i]);
+                        }
+                        
+                        // Проходим по строкам и вычисляем класс для каждой детекции
+                        // Формат выхода: bbox координаты центра, ширина и высота x y w h, 10 уверенностей классов
+                        interface Detection {
+                          rowIndex: number;
+                          x: number;
+                          y: number;
+                          w: number;
+                          h: number;
+                          predictedClass: number;
+                          maxConfidence: number;
+                          classConfidences: number[];
+                        }
+                        const filteredDetections: Detection[] = [];
+                        
+                        detectTransposedMatrix.forEach((row, rowIndex) => {
+                          if (row.length >= 14) {
+                            const x = row[0]; // x координата центра
+                            const y = row[1]; // y координата центра  
+                            const w = row[2]; // ширина
+                            const h = row[3]; // высота
+                            
+                            // Уверенности классов находятся в индексах 4-13 (10 классов)
+                            const classConfidences = row.slice(4, 14);
+                            
+                            // Находим индекс наибольшей уверенности
+                            let maxConfidenceIndex = 0;
+                            let maxConfidence = classConfidences[0];
+                            
+                            for (let i = 1; i < classConfidences.length; i++) {
+                              if (classConfidences[i] > maxConfidence) {
+                                maxConfidence = classConfidences[i];
+                                maxConfidenceIndex = i;
+                              }
+                            }
+                            
+                            // Класс = индекс наибольшей вероятности (без вычитания 4)
+                            const predictedClass = maxConfidenceIndex;
+                            
+                            // Добавляем все детекции без фильтрации по уверенности
+                            filteredDetections.push({
+                              rowIndex: rowIndex + 1,
+                              x,
+                              y,
+                              w,
+                              h,
+                              predictedClass,
+                              maxConfidence,
+                              classConfidences
+                            });
+                          }
+                        });
+                        
+                        // Группируем детекции по классам
+                        const detectionsByClass: { [key: number]: Detection[] } = {};
+                        
+                        filteredDetections.forEach((detection) => {
+                          if (!detectionsByClass[detection.predictedClass]) {
+                            detectionsByClass[detection.predictedClass] = [];
+                          }
+                          detectionsByClass[detection.predictedClass].push(detection);
+                        });
+                        
+                        // Сортируем детекции в каждом классе по убыванию уверенности и выводим по 10 лучших
+                        console.log(`Найдено ${filteredDetections.length} детекций:`);
+                        console.log(`Детекции сгруппированы по ${Object.keys(detectionsByClass).length} классам:`);
+                        
+                        Object.keys(detectionsByClass).forEach((classKey) => {
+                          const classIndex = parseInt(classKey);
+                          const classDetections = detectionsByClass[classIndex];
+                          
+                          // Сортируем по убыванию уверенности
+                          classDetections.sort((a, b) => b.maxConfidence - a.maxConfidence);
+                          
+                          // Берем первые 10 детекций для этого класса
+                          const top10 = classDetections.slice(0, 10);
+                          
+                          console.log(`\n=== КЛАСС ${classIndex} (${classDetections.length} детекций) ===`);
+                          console.log(`Топ-${top10.length} детекций для класса ${classIndex}:`);
+                          
+                          top10.forEach((detection, index) => {
+                            console.log(`${index + 1}. Детекция ${detection.rowIndex}:`);
+                            console.log(`   Координаты центра: x=${detection.x.toFixed(4)}, y=${detection.y.toFixed(4)}`);
+                            console.log(`   Размеры: w=${detection.w.toFixed(4)}, h=${detection.h.toFixed(4)}`);
+                            console.log(`   Уверенность: ${detection.maxConfidence.toFixed(4)}`);
+                            console.log(`   Все уверенности классов:`, detection.classConfidences.map((c: number) => c.toFixed(4)));
+                          });
+                        });
+                      }
+                      
+                    } catch (detectError) {
+                      console.error('Ошибка при запуске detect модели:', detectError);
+                    }
+                  } else {
+                    console.log('Detect модель не загружена');
+                  }
                   
                   // Создаем временный файл для обрезанного изображения
                   const tempCroppedPath = `${RNFS.CachesDirectoryPath}/temp_cropped_${Date.now()}.jpg`;
