@@ -9,7 +9,11 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Приложение сохраняет обработанные фотографии в галерею.",
+        "NSPhotoLibraryAddUsageDescription": "Приложение сохраняет обработанные фотографии в галерею."
+      }
     },
     "web": {
       "bundler": "metro",
@@ -19,13 +23,24 @@
     "plugins": [
       "expo-router",
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Приложение сохраняет обработанные фотографии в галерею.",
+          "savePhotosPermission": "Приложение сохраняет обработанные фотографии в галерею."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
     },
     "android": {
-      "package": "com.anonymous.boltexponativewind"
+      "package": "com.anonymous.boltexponativewind",
+      "permissions": [
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE"
+      ]
     }
   }
 }
