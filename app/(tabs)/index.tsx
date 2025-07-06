@@ -8,6 +8,7 @@ import {
   Platform,
   Dimensions,
   Image,
+  ScrollView,
 } from 'react-native';
 import * as MediaLibrary from 'expo-media-library';
 import * as ImagePicker from 'expo-image-picker';
@@ -20,6 +21,87 @@ import RNFS from 'react-native-fs';
 
 const { width, height } = Dimensions.get('window');
 
+// Интерфейс для bounding box
+interface Bbox {
+  cls: number;
+  conf: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Функция для получения цифр из bbox'ов
+function getNumbers(boxes: Bbox[]): string {
+  // Создаем копию массива для сортировки
+  const sortedBoxes = [...boxes];
+  
+  // Сортируем по x координате
+  sortedBoxes.sort((a, b) => a.x - b.x);
+  
+  let s = "";
+  while (sortedBoxes.length > 0) {
+    const box = sortedBoxes.pop()!;
+    const similarBoxes = [box];
+    
+    while (sortedBoxes.length > 0) {
+      const similarBox = sortedBoxes.pop()!;
+      if (Math.abs(box.x - similarBox.x) < box.w / 3) {
+        similarBoxes.push(similarBox);
+      } else {
+        sortedBoxes.push(similarBox);
+        break;
+      }
+    }
+    
+    similarBoxes.sort((a, b) => a.cls - b.cls || a.conf - b.conf);
+    const uniqueBoxes: Bbox[] = [];
+    
+    while (similarBoxes.length > 0) {
+      const uniqueBox = similarBoxes.pop()!;
+      uniqueBoxes.push(uniqueBox);
+      while (similarBoxes.length > 0 && similarBoxes[similarBoxes.length - 1].cls === uniqueBox.cls) {
+        similarBoxes.pop();
+      }
+    }
+    
+    if (uniqueBoxes.length === 1) {
+      s = uniqueBoxes[0].cls.toString() + s;
+    } else if (uniqueBoxes.length === 2) {
+      const maxClass = Math.max(uniqueBoxes[0].cls, uniqueBoxes[1].cls);
+      const minClass = Math.min(uniqueBoxes[0].cls, uniqueBoxes[1].cls);
+      
+      if (minClass > 0 && minClass + 1 === maxClass) {
+        s = (s === "" || parseInt(s) === 0 ? maxClass.toString() : minClass.toString()) + s;
+      } else if (minClass === 0 && maxClass === 9) {
+        s = (s === "" || parseInt(s) === 0 ? minClass.toString() : maxClass.toString()) + s;
+      } else {
+        s = uniqueBoxes.reduce((prev, curr) => prev.conf > curr.conf ? prev : curr).cls.toString() + s;
+      }
+    } else {
+      s = uniqueBoxes.reduce((prev, curr) => prev.conf > curr.conf ? prev : curr).cls.toString() + s;
+    }
+  }
+  
+  return s;
+}
+
+// Функция для преобразования в реальное число
+function toRealNumber(number: string): string {
+  const length = number.length;
+  let realNumber: string;
+  
+  if (length >= 5 && length <= 8) {
+    realNumber = parseFloat(number.slice(0, 5) + '.' + number.slice(5)).toString();
+  } else if (length < 5) {
+    realNumber = parseInt(number).toString();
+  } else {
+    realNumber = parseFloat(number.slice(0, -3) + '.' + number.slice(-3)).toString();
+  }
+  
+  return `Распознанные цифры - ${number}\nПредполагаемые показания - ${realNumber}`;
+}
+
 export default function ImagePickerScreen() {
   const [mediaLibraryPermission, requestMediaLibraryPermission] = 
     MediaLibrary.usePermissions();
@@ -28,6 +110,7 @@ export default function ImagePickerScreen() {
   const [isCapturing, setIsCapturing] = useState(false);
   const [lastPhotoSaved, setLastPhotoSaved] = useState(false);
   const [processedImage, setProcessedImage] = useState<string | null>(null);
+  const [recognitionResult, setRecognitionResult] = useState<string | null>(null);
   const [showCamera, setShowCamera] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [facing, setFacing] = useState<CameraType>('back');
@@ -77,7 +160,7 @@ export default function ImagePickerScreen() {
 
 
 
-  // Функция для поворота и вырезания квадрата с наибольшей стороной
+  // Функция для поворота и вырезания прямоугольника с последующим добавлением черных границ
   const cropHorizontalRect = (srcMat: any, x: number, y: number, w: number, h: number, angleRad: number): any => {
     try {
       // Если высота больше ширины, меняем местами и корректируем угол
@@ -90,7 +173,7 @@ export default function ImagePickerScreen() {
       const center = OpenCV.createObject(ObjectType.Point2f, x, y);
 
       // Получаем матрицу поворота
-      const rotationMatrix= OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      const rotationMatrix = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
       OpenCV.invoke('getRotationMatrix2D', center, angleDeg, 1.0, rotationMatrix);
       
       // Поворачиваем изображение
@@ -99,35 +182,66 @@ export default function ImagePickerScreen() {
       const size = OpenCV.createObject(ObjectType.Size, srcInfo.cols, srcInfo.rows);
       OpenCV.invoke('warpAffine', srcMat, rotatedMat, rotationMatrix, size);
 
-      // Определяем размер квадрата как наибольшую сторону
-      const maxSide = Math.max(w, h);
-      const squareSize = Math.floor(maxSide);
-      
-      console.log(`Создаем квадрат ${squareSize}x${squareSize} для центрирования прямоугольника ${Math.floor(w)}x${Math.floor(h)}`);
-
-      // Вычисляем границы квадрата с центрированием
+      // Обрезаем прямоугольник (не квадрат)
       const xInt = Math.floor(x);
       const yInt = Math.floor(y);
+      const wInt = Math.floor(w);
+      const hInt = Math.floor(h);
       
-      const left = Math.max(0, xInt - Math.floor(squareSize / 2));
-      const top = Math.max(0, yInt - Math.floor(squareSize / 2));
-      const right = Math.min(srcInfo.cols, xInt + Math.floor(squareSize / 2));
-      const bottom = Math.min(srcInfo.rows, yInt + Math.floor(squareSize / 2));
+      const left = Math.max(0, xInt - Math.floor(wInt / 2));
+      const top = Math.max(0, yInt - Math.floor(hInt / 2));
+      const right = Math.min(srcInfo.cols, xInt + Math.floor(wInt / 2));
+      const bottom = Math.min(srcInfo.rows, yInt + Math.floor(hInt / 2));
 
-      // Проверяем, что получается квадрат
       const actualWidth = right - left;
       const actualHeight = bottom - top;
       
-      console.log(`Фактические размеры вырезанной области: ${actualWidth}x${actualHeight}`);
+      console.log(`Обрезаем прямоугольник: ${actualWidth}x${actualHeight}`);
 
-      // Создаем ROI (Region of Interest) для квадрата
+      // Создаем ROI для прямоугольника
       const rect = OpenCV.createObject(ObjectType.Rect, left, top, actualWidth, actualHeight);
       const croppedMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
       OpenCV.invoke('crop', rotatedMat, croppedMat, rect);
 
-      return croppedMat;
+      // Получаем размеры обрезанного изображения
+      const croppedInfo = OpenCV.toJSValue(croppedMat);
+      const croppedWidth = croppedInfo.cols;
+      const croppedHeight = croppedInfo.rows;
+      
+      console.log(`Размеры обрезанного изображения: ${croppedWidth}x${croppedHeight}`);
+
+      // Определяем коэффициент масштабирования для resize с сохранением пропорций
+      const maxDimension = Math.max(croppedWidth, croppedHeight);
+      const scaleFactor = 640 / maxDimension;
+      
+      const newWidth = Math.floor(croppedWidth * scaleFactor);
+      const newHeight = Math.floor(croppedHeight * scaleFactor);
+      
+      console.log(`Новые размеры после resize: ${newWidth}x${newHeight}, scale: ${scaleFactor}`);
+
+      // Выполняем resize с сохранением пропорций
+      const resizedMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      const newSize = OpenCV.createObject(ObjectType.Size, newWidth, newHeight);
+      OpenCV.invoke('resize', croppedMat, resizedMat, newSize, 0, 0, 1); // 1 = INTER_LINEAR
+
+      // Вычисляем отступы для центрирования в квадрате 640x640
+      const targetSize = 640;
+      const top_pad = Math.floor((targetSize - newHeight) / 2);
+      const bottom_pad = targetSize - newHeight - top_pad;
+      const left_pad = Math.floor((targetSize - newWidth) / 2);
+      const right_pad = targetSize - newWidth - left_pad;
+
+      console.log(`Отступы: top=${top_pad}, bottom=${bottom_pad}, left=${left_pad}, right=${right_pad}`);
+
+      // Создаем финальное изображение с черными границами
+      const finalMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      const blackColor = OpenCV.createObject(ObjectType.Scalar, 0, 0, 0); // Черный цвет (BGR)
+      
+      OpenCV.invoke('copyMakeBorder', resizedMat, finalMat, top_pad, bottom_pad, left_pad, right_pad, 0, blackColor); // 0 = BORDER_CONSTANT
+
+      return finalMat;
     } catch (error) {
-      console.error('Ошибка при обрезке квадрата:', error);
+      console.error('Ошибка при обрезке с черными границами:', error);
       throw error;
     }
   };
@@ -418,9 +532,14 @@ export default function ImagePickerScreen() {
                           classConfidences: number[];
                         }
                         const filteredDetections: Detection[] = [];
+                        const confidenceThreshold = 0.5;
+                        let totalDetections = 0;
+                        let filteredCount = 0;
                         
                         detectTransposedMatrix.forEach((row, rowIndex) => {
                           if (row.length >= 14) {
+                            totalDetections++;
+                            
                             const x = row[0]; // x координата центра
                             const y = row[1]; // y координата центра  
                             const w = row[2]; // ширина
@@ -443,19 +562,24 @@ export default function ImagePickerScreen() {
                             // Класс = индекс наибольшей вероятности (без вычитания 4)
                             const predictedClass = maxConfidenceIndex;
                             
-                            // Добавляем все детекции без фильтрации по уверенности
-                            filteredDetections.push({
-                              rowIndex: rowIndex + 1,
-                              x,
-                              y,
-                              w,
-                              h,
-                              predictedClass,
-                              maxConfidence,
-                              classConfidences
-                            });
+                            // Фильтруем по порогу confidence
+                            if (maxConfidence > confidenceThreshold) {
+                              filteredCount++;
+                              filteredDetections.push({
+                                rowIndex: rowIndex + 1,
+                                x,
+                                y,
+                                w,
+                                h,
+                                predictedClass,
+                                maxConfidence,
+                                classConfidences
+                              });
+                            }
                           }
                         });
+                        
+                        console.log(`Всего детекций: ${totalDetections}, прошли фильтр (confidence > ${confidenceThreshold}): ${filteredCount}`);
                         
                         // Группируем детекции по классам
                         const detectionsByClass: { [key: number]: Detection[] } = {};
@@ -492,6 +616,43 @@ export default function ImagePickerScreen() {
                             console.log(`   Все уверенности классов:`, detection.classConfidences.map((c: number) => c.toFixed(4)));
                           });
                         });
+
+                        // Создаем массив Bbox для функции getNumbers
+                        const bboxes: Bbox[] = filteredDetections.map((detection) => ({
+                          cls: detection.predictedClass,
+                          conf: detection.maxConfidence,
+                          x: detection.x,
+                          y: detection.y,
+                          w: detection.w,
+                          h: detection.h
+                        }));
+
+                        console.log('\n=== РАСПОЗНАВАНИЕ ЦИФР ===');
+                        console.log('Создано bbox\'ов для обработки:', bboxes.length);
+                        
+                        if (bboxes.length > 0) {
+                          try {
+                            const digits = getNumbers(bboxes);
+                            console.log('Распознанные цифры:', digits);
+                            
+                            if (digits && digits.length > 0) {
+                              const result = toRealNumber(digits);
+                              console.log('Результат распознавания:', result);
+                              
+                              // Устанавливаем результат для отображения на экране
+                              setRecognitionResult(result);
+                            } else {
+                              console.log('Цифры не распознаны');
+                              setRecognitionResult('Цифры не распознаны');
+                            }
+                          } catch (error) {
+                            console.error('Ошибка при распознавании цифр:', error);
+                            setRecognitionResult('Ошибка при распознавании цифр');
+                          }
+                        } else {
+                          console.log('Нет bbox\'ов для обработки');
+                          setRecognitionResult('Нет обнаруженных цифр');
+                        }
                       }
                       
                     } catch (detectError) {
@@ -553,6 +714,7 @@ export default function ImagePickerScreen() {
     
     setIsCapturing(true);
     setLastPhotoSaved(false);
+    setRecognitionResult(null);
     
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -610,6 +772,7 @@ export default function ImagePickerScreen() {
     
     setIsProcessing(true);
     setLastPhotoSaved(false);
+    setRecognitionResult(null);
     
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -720,16 +883,7 @@ export default function ImagePickerScreen() {
 
       {/* Отображение обработанного изображения */}
       {processedImage && (
-        <TouchableOpacity
-          style={styles.processedImageContainer}
-          activeOpacity={1}
-          onPress={() => {
-            if (Platform.OS !== 'web') {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            }
-            setProcessedImage(null);
-          }}
-        >
+        <View style={styles.processedImageContainer}>
           <TouchableOpacity
             style={styles.closeButton}
             onPress={() => {
@@ -737,26 +891,46 @@ export default function ImagePickerScreen() {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               }
               setProcessedImage(null);
+              setRecognitionResult(null);
             }}
             activeOpacity={0.7}
           >
             <Text style={styles.closeButtonText}>×</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.imageWrapper}
-            activeOpacity={1}
-            onPress={() => {}}
+          
+          <ScrollView 
+            style={styles.resultsScrollView}
+            contentContainerStyle={styles.resultsContainer}
+            showsVerticalScrollIndicator={false}
           >
-            <Image
-              source={{ uri: processedImage }}
-              style={styles.processedImage}
-              resizeMode="contain"
-            />
-          </TouchableOpacity>
-          <Text style={styles.processedImageText}>
-            Обрезанное изображение по OBB
-          </Text>
-        </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.imageWrapper}
+              activeOpacity={1}
+              onPress={() => {}}
+            >
+              <Image
+                source={{ uri: processedImage }}
+                style={styles.processedImage}
+                resizeMode="contain"
+              />
+            </TouchableOpacity>
+            
+            <Text style={styles.processedImageText}>
+              Обрезанное изображение по OBB
+            </Text>
+            
+            {recognitionResult && (
+              <View style={styles.recognitionResultContainer}>
+                <Text style={styles.recognitionResultTitle}>
+                  Результат распознавания:
+                </Text>
+                <Text style={styles.recognitionResultText}>
+                  {recognitionResult}
+                </Text>
+              </View>
+            )}
+          </ScrollView>
+        </View>
       )}
 
       {/* Интерфейс камеры */}
@@ -1100,5 +1274,35 @@ const styles = StyleSheet.create({
   },
   buttonsContainer: {
     gap: 20,
+  },
+  resultsScrollView: {
+    flex: 1,
+    width: '100%',
+  },
+  resultsContainer: {
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+  },
+  recognitionResultContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 15,
+    padding: 20,
+    marginTop: 20,
+    marginHorizontal: 20,
+    alignItems: 'center',
+  },
+  recognitionResultTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  recognitionResultText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 22,
   },
 });
