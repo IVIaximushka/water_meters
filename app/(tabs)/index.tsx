@@ -52,6 +52,67 @@ export default function ImagePickerScreen() {
     }
   };
 
+  // Функция для преобразования изображения в Float32Array
+  const convertImageToFloat32Array = (base64Image: string): Float32Array => {
+    try {
+      // Создаем Mat из base64 изображения
+      const src = OpenCV.base64ToMat(base64Image);
+      console.log('Исходное изображение:', src);
+      
+      // Получаем информацию об изображении
+      const imageData = OpenCV.toJSValue(src);
+      console.log('Информация об изображении:', {
+        width: imageData.cols,
+        height: imageData.rows,
+        size: imageData.size,
+        type: imageData.type
+      });
+      
+      // Создаем копию для изменения размера
+      const resized = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      const targetSize = OpenCV.createObject(ObjectType.Size, 640, 640);
+      OpenCV.invoke('resize', src, resized, targetSize, 0, 0, 1);
+      
+      // Конвертируем в RGB формат
+      const rgbMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
+      OpenCV.invoke('cvtColor', resized, rgbMat, 4); // 4 = COLOR_BGR2RGB
+      
+      // Получаем RGB данные
+      const rgbData = OpenCV.toJSValue(rgbMat);
+      
+      if (rgbData && rgbData.base64) {
+        console.log('RGB изображение получено, размер base64:', rgbData.base64.length);
+        
+        // Декодируем base64 в массив байтов
+        const buf = OpenCV.matToBuffer(rgbMat, "uint8");
+        const bytes = buf.buffer;
+        console.log('Первые 10 байтов:', bytes.slice(0, 10));
+        
+        // Размеры изображения
+        const width = rgbData.cols;
+        const height = rgbData.rows;
+        
+        console.log('Создание матрицы пикселей размера:', `${height}×${width}×3`);
+        
+        // Создаем Float32Array с нормализацией
+        const totalSize = 640 * 640 * 3;
+        const floatArray = new Float32Array(totalSize);
+        
+        // Преобразуем байты в Float32Array с нормализацией на 255.0
+        for (let i = 0; i < totalSize && i < bytes.length; i++) {
+          floatArray[i] = bytes[i] / 255.0;
+        }
+        
+        return floatArray;
+      }
+      
+      throw new Error('Не удалось получить RGB данные изображения');
+    } catch (error) {
+      console.error('Ошибка при преобразовании изображения в Float32Array:', error);
+      throw error;
+    }
+  };
+
   // Обработка изображения с помощью OpenCV
   const processImageWithOpenCV = async (base64Image: string): Promise<string> => {
     try {
@@ -61,7 +122,12 @@ export default function ImagePickerScreen() {
       
       // Создаем Mat из base64 изображения
       const src = OpenCV.base64ToMat(base64Image);
+      console.log(src)
       
+      // Преобразуем изображение в Float32Array
+      const floatArray = convertImageToFloat32Array(base64Image);
+      console.log('Получен Float32Array:', floatArray.length, 'элементов');
+
       // Создаем Mat для результата
       const dst = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC3);
       
