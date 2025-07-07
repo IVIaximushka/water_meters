@@ -12,7 +12,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Trash2, Calendar, Image as ImageIcon } from 'lucide-react-native';
-import { getHistory, deleteHistoryEntry, HistoryEntry, createTestEntry } from '../../utils/storageUtils';
+import { getHistory, deleteHistoryEntry, HistoryEntry } from '../../utils/storageUtils';
 
 const { width } = Dimensions.get('window');
 
@@ -117,17 +117,6 @@ export default function HistoryScreen() {
             }}
           >
             <Text style={styles.refreshButtonText}>Проверить историю</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[styles.refreshButton, { backgroundColor: '#4CAF50' }]}
-            onPress={() => {
-              console.log('Создание тестовой записи');
-              createTestEntry();
-              loadHistory();
-            }}
-          >
-            <Text style={styles.refreshButtonText}>Создать тестовую запись</Text>
           </TouchableOpacity>
         </View>
       </View>

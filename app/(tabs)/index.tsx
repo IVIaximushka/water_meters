@@ -121,6 +121,8 @@ export default function ImagePickerScreen() {
   const [obbModel, setObbModel] = useState<TensorflowModel | null>(null);
   const [detectModel, setDetectModel] = useState<TensorflowModel | null>(null);
   const [originalImage, setOriginalImage] = useState<string | null>(null);
+  const [showSaveSuccess, setShowSaveSuccess] = useState(false);
+  const [showCopySuccess, setShowCopySuccess] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
   // Загрузка модели при монтировании компонента
@@ -171,8 +173,9 @@ export default function ImagePickerScreen() {
         editedReading: historyEntry.editedReading
       });
       
-      // Показываем уведомление
-      Alert.alert('Успех', 'Данные сохранены в историю');
+      // Показываем кастомное уведомление
+      setShowSaveSuccess(true);
+      setTimeout(() => setShowSaveSuccess(false), 3000);
       
       if (Platform.OS !== 'web') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -829,7 +832,8 @@ export default function ImagePickerScreen() {
   const copyToClipboard = async (text: string) => {
     try {
       await Clipboard.setString(text);
-      Alert.alert('Успех', 'Показания скопированы в буфер обмена');
+      setShowCopySuccess(true);
+      setTimeout(() => setShowCopySuccess(false), 2000);
       
       if (Platform.OS !== 'web') {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -994,7 +998,7 @@ export default function ImagePickerScreen() {
             </TouchableOpacity>
             
             <Text style={styles.processedImageText}>
-              Обрезанное изображение по OBB
+              Обнаруженный циферблат
             </Text>
             
             {recognitionResult && (
@@ -1089,9 +1093,9 @@ export default function ImagePickerScreen() {
         <View style={styles.mainContent}>
           <View style={styles.headerContainer}>
             <ImageIcon size={80} color="#007AFF" />
-            <Text style={styles.headerTitle}>Обработка изображений</Text>
+            <Text style={styles.headerTitle}>Рапознавание показаний счетчика</Text>
             <Text style={styles.headerSubtitle}>
-              Сделайте фото или выберите из галереи для обрезки по OBB
+              Сделайте фото или выберите из галереи для распознавания
             </Text>
           </View>
 
@@ -1129,6 +1133,26 @@ export default function ImagePickerScreen() {
                 </Text>
               </View>
             </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Уведомление об успешном сохранении */}
+      {showSaveSuccess && (
+        <View style={styles.saveSuccessOverlay}>
+          <View style={styles.saveSuccessContainer}>
+            <CheckCircle size={32} color="#4CAF50" />
+            <Text style={styles.saveSuccessTitle}>Успешно сохранено!</Text>
+            <Text style={styles.saveSuccessText}>Данные добавлены в историю</Text>
+          </View>
+        </View>
+      )}
+
+      {/* Уведомление о копировании */}
+      {showCopySuccess && (
+        <View style={styles.copySuccessOverlay}>
+          <View style={styles.copySuccessContainer}>
+            <Text style={styles.copySuccessText}>Скопировано!</Text>
           </View>
         </View>
       )}
@@ -1450,5 +1474,65 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  // Стили для уведомлений
+  saveSuccessOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 2000,
+  },
+  saveSuccessContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 25,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 12,
+    minWidth: 280,
+  },
+  saveSuccessTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 10,
+    marginBottom: 5,
+  },
+  saveSuccessText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+  },
+  copySuccessOverlay: {
+    position: 'absolute',
+    top: 80,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 2000,
+  },
+  copySuccessContainer: {
+    backgroundColor: '#4CAF50',
+    borderRadius: 25,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  copySuccessText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
