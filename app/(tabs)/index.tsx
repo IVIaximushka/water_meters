@@ -9,6 +9,8 @@ import {
   Dimensions,
   Image,
   ScrollView,
+  TextInput,
+  Clipboard,
 } from 'react-native';
 import * as MediaLibrary from 'expo-media-library';
 import * as ImagePicker from 'expo-image-picker';
@@ -111,6 +113,7 @@ export default function ImagePickerScreen() {
   const [lastPhotoSaved, setLastPhotoSaved] = useState(false);
   const [processedImage, setProcessedImage] = useState<string | null>(null);
   const [recognitionResult, setRecognitionResult] = useState<string | null>(null);
+  const [editableReading, setEditableReading] = useState<string>('');
   const [showCamera, setShowCamera] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [facing, setFacing] = useState<CameraType>('back');
@@ -641,9 +644,18 @@ export default function ImagePickerScreen() {
                               
                               // Устанавливаем результат для отображения на экране
                               setRecognitionResult(result);
+                              
+                              // Извлекаем только предполагаемые показания для редактирования
+                              const lines = result.split('\n');
+                              const readingLine = lines.find(line => line.includes('Предполагаемые показания - '));
+                              if (readingLine) {
+                                const reading = readingLine.split('Предполагаемые показания - ')[1];
+                                setEditableReading(reading || '');
+                              }
                             } else {
                               console.log('Цифры не распознаны');
                               setRecognitionResult('Цифры не распознаны');
+                              setEditableReading('');
                             }
                           } catch (error) {
                             console.error('Ошибка при распознавании цифр:', error);
@@ -652,6 +664,7 @@ export default function ImagePickerScreen() {
                         } else {
                           console.log('Нет bbox\'ов для обработки');
                           setRecognitionResult('Нет обнаруженных цифр');
+                          setEditableReading('');
                         }
                       }
                       
@@ -715,6 +728,7 @@ export default function ImagePickerScreen() {
     setIsCapturing(true);
     setLastPhotoSaved(false);
     setRecognitionResult(null);
+    setEditableReading('');
     
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -761,9 +775,21 @@ export default function ImagePickerScreen() {
     }
   };
 
-  // Переключение камеры
-  const toggleCameraFacing = () => {
-    setFacing(current => (current === 'back' ? 'front' : 'back'));
+
+
+  // Копирование в буфер обмена
+  const copyToClipboard = async (text: string) => {
+    try {
+      await Clipboard.setString(text);
+      Alert.alert('Успех', 'Показания скопированы в буфер обмена');
+      
+      if (Platform.OS !== 'web') {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+    } catch (error) {
+      console.error('Ошибка при копировании:', error);
+      Alert.alert('Ошибка', 'Не удалось скопировать показания');
+    }
   };
 
   // Выбор фото из галереи
@@ -773,6 +799,7 @@ export default function ImagePickerScreen() {
     setIsProcessing(true);
     setLastPhotoSaved(false);
     setRecognitionResult(null);
+    setEditableReading('');
     
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -892,6 +919,7 @@ export default function ImagePickerScreen() {
               }
               setProcessedImage(null);
               setRecognitionResult(null);
+              setEditableReading('');
             }}
             activeOpacity={0.7}
           >
@@ -927,6 +955,29 @@ export default function ImagePickerScreen() {
                 <Text style={styles.recognitionResultText}>
                   {recognitionResult}
                 </Text>
+                
+                <View style={styles.editableContainer}>
+                  <Text style={styles.editableLabel}>
+                    Показания счетчика:
+                  </Text>
+                  <TextInput
+                    style={styles.editableInput}
+                    value={editableReading}
+                    onChangeText={setEditableReading}
+                    placeholder="Введите показания"
+                    keyboardType="numeric"
+                    selectTextOnFocus
+                  />
+                  <TouchableOpacity
+                    style={styles.copyButton}
+                    onPress={() => copyToClipboard(editableReading)}
+                    disabled={!editableReading.trim()}
+                  >
+                    <Text style={styles.copyButtonText}>
+                      Копировать
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
           </ScrollView>
@@ -949,13 +1000,6 @@ export default function ImagePickerScreen() {
               onPress={() => setShowCamera(false)}
             >
               <Text style={styles.closeButtonText}>×</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              style={styles.flipButton}
-              onPress={toggleCameraFacing}
-            >
-              <Text style={styles.flipButtonText}>↻</Text>
             </TouchableOpacity>
           </View>
           
@@ -1221,28 +1265,11 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     paddingHorizontal: 20,
     zIndex: 1001,
   },
-  flipButton: {
-    width: 50,
-    height: 50,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  flipButtonText: {
-    fontSize: 24,
-    color: '#000',
-    fontWeight: 'bold',
-  },
+
   cameraControls: {
     position: 'absolute',
     bottom: 60,
@@ -1304,5 +1331,44 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
     lineHeight: 22,
+  },
+  editableContainer: {
+    marginTop: 20,
+    width: '100%',
+    alignItems: 'center',
+  },
+  editableLabel: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 10,
+  },
+  editableInput: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    textAlign: 'center',
+    marginBottom: 15,
+  },
+  copyButton: {
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  copyButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
