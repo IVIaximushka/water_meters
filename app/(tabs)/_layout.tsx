@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { Image } from 'lucide-react-native';
+import { Image, Clock } from 'lucide-react-native';
 
 export default function TabLayout() {
   return (
@@ -19,6 +19,15 @@ export default function TabLayout() {
           title: 'Обработка фото',
           tabBarIcon: ({ size, color }) => (
             <Image size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="history"
+        options={{
+          title: 'История',
+          tabBarIcon: ({ size, color }) => (
+            <Clock size={size} color={color} />
           ),
         }}
       />

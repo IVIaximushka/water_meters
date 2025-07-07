@@ -16,10 +16,11 @@ import * as MediaLibrary from 'expo-media-library';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
-import { Image as ImageIcon, CheckCircle, Camera as CameraIcon, FolderOpen } from 'lucide-react-native';
+import { Image as ImageIcon, CheckCircle, Camera as CameraIcon, FolderOpen, Copy } from 'lucide-react-native';
 import { OpenCV, RotateFlags, ObjectType, DataTypes } from 'react-native-fast-opencv';
 import { loadTensorflowModel, TensorflowModel } from 'react-native-fast-tflite';
 import RNFS from 'react-native-fs';
+import { saveHistoryEntry, generateHistoryEntry } from '../../utils/storageUtils';
 
 const { width, height } = Dimensions.get('window');
 
@@ -119,6 +120,7 @@ export default function ImagePickerScreen() {
   const [facing, setFacing] = useState<CameraType>('back');
   const [obbModel, setObbModel] = useState<TensorflowModel | null>(null);
   const [detectModel, setDetectModel] = useState<TensorflowModel | null>(null);
+  const [originalImage, setOriginalImage] = useState<string | null>(null);
   const cameraRef = useRef<CameraView>(null);
 
   // Загрузка модели при монтировании компонента
@@ -140,6 +142,46 @@ export default function ImagePickerScreen() {
     };
     loadModels();
   }, []);
+
+
+
+  // Ручное сохранение в историю
+  const handleSaveToHistory = async () => {
+    if (!processedImage || !recognitionResult) return;
+    
+    try {
+      // Создаем запись истории
+      const historyEntry = generateHistoryEntry(
+        originalImage ? `data:image/jpeg;base64,${originalImage}` : '',
+        originalImage ? `data:image/jpeg;base64,${originalImage}` : '',
+        recognitionResult,
+        editableReading
+      );
+      
+      // Сохраняем в AsyncStorage
+      await saveHistoryEntry(historyEntry);
+      
+      console.log('Данные вручную сохранены в историю:', historyEntry.id);
+      console.log('Структура записи:', {
+        id: historyEntry.id,
+        date: historyEntry.date,
+        hasOriginalImage: !!historyEntry.originalImage,
+        hasProcessedImage: !!historyEntry.processedImage,
+        recognitionResult: historyEntry.recognitionResult,
+        editedReading: historyEntry.editedReading
+      });
+      
+      // Показываем уведомление
+      Alert.alert('Успех', 'Данные сохранены в историю');
+      
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (error) {
+      console.error('Ошибка при сохранении в историю:', error);
+      Alert.alert('Ошибка', 'Не удалось сохранить данные в историю');
+    }
+  };
 
   // Функция для запроса всех разрешений
   const requestAllPermissions = async () => {
@@ -366,6 +408,9 @@ export default function ImagePickerScreen() {
       if (!base64Image) {
         throw new Error('Не удалось получить base64 изображения');
       }
+      
+      // Сохраняем оригинальное изображение
+      setOriginalImage(base64Image);
       
       // Создаем Mat из base64 изображения
       const src = OpenCV.base64ToMat(base64Image);
@@ -718,6 +763,8 @@ export default function ImagePickerScreen() {
       console.error('Ошибка при обработке изображения:', error);
       OpenCV.clearBuffers();
       throw error;
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -729,6 +776,7 @@ export default function ImagePickerScreen() {
     setLastPhotoSaved(false);
     setRecognitionResult(null);
     setEditableReading('');
+    setOriginalImage(null);
     
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -800,6 +848,7 @@ export default function ImagePickerScreen() {
     setLastPhotoSaved(false);
     setRecognitionResult(null);
     setEditableReading('');
+    setOriginalImage(null);
     
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -920,6 +969,7 @@ export default function ImagePickerScreen() {
               setProcessedImage(null);
               setRecognitionResult(null);
               setEditableReading('');
+              setOriginalImage(null);
             }}
             activeOpacity={0.7}
           >
@@ -960,21 +1010,31 @@ export default function ImagePickerScreen() {
                   <Text style={styles.editableLabel}>
                     Показания счетчика:
                   </Text>
-                  <TextInput
-                    style={styles.editableInput}
-                    value={editableReading}
-                    onChangeText={setEditableReading}
-                    placeholder="Введите показания"
-                    keyboardType="numeric"
-                    selectTextOnFocus
-                  />
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.editableInput}
+                      value={editableReading}
+                      onChangeText={setEditableReading}
+                      placeholder="Введите показания"
+                      keyboardType="numeric"
+                      selectTextOnFocus
+                    />
+                    <TouchableOpacity
+                      style={styles.copyIconButton}
+                      onPress={() => copyToClipboard(editableReading)}
+                      disabled={!editableReading.trim()}
+                    >
+                      <Copy size={20} color={editableReading.trim() ? "#4CAF50" : "#ccc"} />
+                    </TouchableOpacity>
+                  </View>
+                  
                   <TouchableOpacity
-                    style={styles.copyButton}
-                    onPress={() => copyToClipboard(editableReading)}
-                    disabled={!editableReading.trim()}
+                    style={styles.saveButton}
+                    onPress={handleSaveToHistory}
+                    disabled={!processedImage || !recognitionResult}
                   >
-                    <Text style={styles.copyButtonText}>
-                      Копировать
+                    <Text style={styles.saveButtonText}>
+                      Сохранить
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -1343,8 +1403,14 @@ const styles = StyleSheet.create({
     color: '#333',
     marginBottom: 10,
   },
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 15,
+    gap: 12,
+  },
   editableInput: {
-    width: '100%',
+    flex: 1,
     backgroundColor: '#fff',
     borderRadius: 10,
     paddingHorizontal: 15,
@@ -1353,22 +1419,36 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#ddd',
     textAlign: 'center',
-    marginBottom: 15,
   },
-  copyButton: {
-    backgroundColor: '#007AFF',
+  copyIconButton: {
+    padding: 12,
+    borderRadius: 25,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+
+  saveButton: {
+    backgroundColor: '#4CAF50',
     paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderRadius: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 3,
+    width: '100%',
   },
-  copyButtonText: {
+  saveButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+    textAlign: 'center',
   },
 });
